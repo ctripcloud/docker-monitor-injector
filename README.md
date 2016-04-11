@@ -10,11 +10,11 @@ Each docker container belongs to one separate cgroup, resources consumed, CPU, M
 
 What make the diffrence of this project is that it take usage of LD_PRELOAD to enable existed tools to calculating matric from cgroup records. On the initialization of inject.so, libc functions like open, lseek are hijacked. hijacked version will calculate from cgroup records once application try to read related system-wide metric sources, otherwise it will pass through request to original version.
 
-# How to use
-
-  * build inject.so
+# Build and test
   
-        > make
+    > make && make test
+
+# Usage
 
   * run a container with required volumes and get right metric
   
@@ -25,15 +25,15 @@ What make the diffrence of this project is that it take usage of LD_PRELOAD to e
 		> uptime
 
 # Progress
-  * (DONE)open, fopen, and lseek on /proc/uptime
-  * (DONE)open, fopen, and lseek on /proc/cpuinfo
-  * (DONE)open, fopen, and lseek on /proc/meminfo
-  * (DONE)open, fopen, and lseek on /proc/stat
-  * (DONE)open, fopen, and lseek on /proc/diskstats
-  * (DONE)open, fopen, and lseek on /system/devices/system/cpu/online
-  * (DONE)sysinfo
-  * (DONE)sysconf(\_SC\_NPROCESSORS\_ONLN)
-  * (TODO)open, fopen, and lseek on /proc/loadavg
+  * (**DONE**)open, fopen, and lseek on /proc/uptime
+  * (**DONE**)open, fopen, and lseek on /proc/cpuinfo
+  * (**DONE**)open, fopen, and lseek on /proc/meminfo
+  * (**DONE**)open, fopen, and lseek on /proc/stat
+  * (**DONE**)open, fopen, and lseek on /proc/diskstats
+  * (**DONE**)open, fopen, and lseek on /system/devices/system/cpu/online
+  * (**DONE**)sysinfo
+  * (**DONE**)sysconf(\_SC\_NPROCESSORS\_ONLN)
+  * (*TODO*)open, fopen, and lseek on /proc/loadavg
 
 # Reference
 

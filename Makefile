@@ -10,3 +10,6 @@ $(versioned_so): inject.c
 
 clean:
 	rm -f *.o *.so inject.so.*
+
+test: inject.so
+	./run_tests.sh
