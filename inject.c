@@ -47,25 +47,15 @@ static glibc_lseek _orig_lseek;
 static glibc_sysinfo _orig_sysinfo;
 static glibc_sysconf _orig_sysconf;
 
-static char *proc_uptime_file_template = "/tmp/"TMPFILE_MAGIC"proc_uptime";
-static char *proc_meminfo_file_template = "/tmp/"TMPFILE_MAGIC"proc_meminfo";
-static char *proc_stat_file_template = "/tmp/"TMPFILE_MAGIC"proc_stat";
-static char *proc_diskstats_file_template = "/tmp/"TMPFILE_MAGIC"proc_diskstats";
-static char *proc_cpuinfo_file_template = "/tmp/"TMPFILE_MAGIC"proc_cpuinfo";
-static char *proc_cpuonline_file_template = "/tmp/"TMPFILE_MAGIC"proc_cpuonline";
 
 static char *basedir = "/sys/fs/cgroup";
 
 static bool inject_open;
 
-enum {
-  PROC_MEMINFO,
-  PROC_UPTIME,
-  PROC_STAT,
-  PROC_DISKSTATS,
-  PROC_CPUINFO,
-  PROC_CPUONLINE,
-  PROC_UNKNOWN,
+struct inject_reader {
+  char *target_path;
+  char *tmp_file_template;
+  proc_reader reader_func;
 };
 
 static int orig_open(const char *pathname, int flags, mode_t mode) {
@@ -1194,33 +1184,31 @@ static int open_container_data(proc_reader func, char* file_temp, int flags, mod
   return ret;
 }
 
+struct inject_reader readers[] = {
+  {"/proc/uptime", "/tmp/"TMPFILE_MAGIC"proc_uptime", read_proc_uptime},
+  {"/proc/meminfo", "/tmp/"TMPFILE_MAGIC"proc_meminfo", read_proc_meminfo},
+  {"/proc/stat",  "/tmp/"TMPFILE_MAGIC"proc_stat", read_proc_stat},
+  {"/proc/diskstats", "/tmp/"TMPFILE_MAGIC"proc_diskstats", read_proc_diskstats},
+  {"/proc/cpuinfo", "/tmp/"TMPFILE_MAGIC"proc_cpuinfo", read_proc_cpuinfo},
+  {"/sys/devices/system/cpu/online", "/tmp/"TMPFILE_MAGIC"proc_cpuonline", read_cpu_online},
+};
+
+#define FOR_EACH_READER(var) struct inject_reader var=readers[0];\
+  for(int i=0; i < sizeof(readers)/sizeof(readers[0]); reader=readers[++i])
+
 
 static int injected_open(const char *pathname, int flags, mode_t mode) {
   int ret = -1;
 
   DEBUG_LOG("Inject open for file %s", pathname);
-  if (0 == strcmp("/proc/uptime", pathname)) {
-    ret = open_container_data(read_proc_uptime, proc_uptime_file_template, flags, mode);
-  }
 
-  if (0 == strcmp("/proc/meminfo", pathname)) {
-    ret = open_container_data(read_proc_meminfo, proc_meminfo_file_template, flags, mode);
-  }
-
-  if (0 == strcmp("/proc/stat", pathname)) {
-    ret = open_container_data(read_proc_stat, proc_stat_file_template, flags, mode);
-  }
-
-  if (0 == strcmp("/proc/diskstats", pathname)) {
-    ret = open_container_data(read_proc_diskstats, proc_diskstats_file_template, flags, mode);
-  }
-
-  if (0 == strcmp("/proc/cpuinfo", pathname)) {
-    ret = open_container_data(read_proc_cpuinfo, proc_cpuinfo_file_template, flags, mode);
-  }
-
-  if (0 == strcmp("/sys/devices/system/cpu/online", pathname)) {
-    ret = open_container_data(read_cpu_online, proc_cpuonline_file_template, flags, mode);
+  FOR_EACH_READER(reader){
+    if (0 == strcmp(reader.target_path, pathname)) {
+      ret = open_container_data(reader.reader_func,
+                                reader.tmp_file_template,
+                                flags, mode);
+      break;
+    }
   }
 
   if (ret < 0) {
@@ -1232,56 +1220,12 @@ static int injected_open(const char *pathname, int flags, mode_t mode) {
 }
 
 static bool is_injected_file(const char *pathname) {
-  if (0 == strcmp("/proc/uptime", pathname)) {
-    return true;
-  }
-
-  if (0 == strcmp("/proc/meminfo", pathname)) {
-    return true;
-  }
-
-  if (0 == strcmp("/proc/stat", pathname)) {
-    return true;
-  }
-  
-  if (0 == strcmp("/sys/devices/system/cpu/online", pathname)) {
-    return true;
-  }
-
-  if (0 == strcmp("/proc/diskstats", pathname)) {
-    return true;
-  }
-
-  if (0 == strcmp("/proc/cpuinfo", pathname)) {
-    return true;
+  FOR_EACH_READER(reader){
+    if (0 == strcmp(reader.target_path, pathname)) {
+      return true;
+    }
   }
   return false;
-}
-
-static int proc_file_type(int fd) {
-  char file_name[128];
-  get_fd_name(fd, file_name, sizeof(file_name));
-
-  if (startswith(file_name, proc_uptime_file_template)) {
-    return PROC_UPTIME;
-  }
-  if (startswith(file_name, proc_meminfo_file_template)) {
-    return PROC_MEMINFO;
-  }
-  if (startswith(file_name, proc_stat_file_template)) {
-    return PROC_STAT;
-  }
-  if (startswith(file_name, proc_diskstats_file_template)) {
-    return PROC_DISKSTATS;
-  }
-  if (startswith(file_name, proc_cpuinfo_file_template)) {
-    return PROC_CPUINFO;
-  }
-  if (startswith(file_name, proc_cpuonline_file_template)) {
-    return PROC_CPUONLINE;
-  }
-
-  return PROC_UNKNOWN;
 }
 
 static int refresh_container_data(int fd, proc_reader func, char *template) {
@@ -1304,27 +1248,16 @@ static int refresh_container_data(int fd, proc_reader func, char *template) {
 }
 
 static off_t injected_lseek(int fd, off_t offset, int whence) {
-  switch (proc_file_type(fd)) {
-  case PROC_MEMINFO:
-    DEBUG_LOG("Inject lseek for fd %d as /proc/meminfo", fd);
-    refresh_container_data(fd, read_proc_meminfo, proc_meminfo_file_template);
-    break;
-  case PROC_UPTIME:
-    DEBUG_LOG("Inject lseek for fd %d as /proc/uptime", fd);
-    refresh_container_data(fd, read_proc_uptime, proc_uptime_file_template);
-    break;
-  case PROC_STAT:
-    DEBUG_LOG("Inject lseek for fd %d as /proc/stat", fd);
-    refresh_container_data(fd, read_proc_stat, proc_stat_file_template);
-    break;
-  case PROC_DISKSTATS:
-    DEBUG_LOG("Inject lseek for fd %d as /proc/diskstats", fd);
-    refresh_container_data(fd, read_proc_diskstats, proc_diskstats_file_template);
-    break;
-  default:
-    break;
-  }
+  char file_name[128];
+  get_fd_name(fd, file_name, sizeof(file_name));
 
+  FOR_EACH_READER(reader) {
+    if (startswith(file_name, reader.tmp_file_template)) {
+      DEBUG_LOG("Inject lseek for fd %d as %s", fd, reader.target_path);
+      refresh_container_data(fd, reader.reader_func, reader.tmp_file_template);
+      break;
+    }
+  }
   return orig_lseek(fd, offset, whence);
 }
 
