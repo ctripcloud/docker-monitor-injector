@@ -39,7 +39,10 @@ typedef FILE* (*glibc_fopen)(const char*, const char*);
 typedef off_t (*glibc_lseek)(int, off_t, int);
 typedef int (*glibc_sysinfo)(struct sysinfo *);
 typedef long (*glibc_sysconf)(int name);
-typedef int (*proc_reader)(FILE *f);
+
+// functions for flush contents of calculated '/proc/<cpuinfo/meminfo...>' to
+// a temporary file.
+typedef int (*tmp_proc_file_flusher)(FILE *f);
 
 static glibc_open _orig_open;
 static glibc_fopen _orig_fopen;
@@ -48,14 +51,14 @@ static glibc_sysinfo _orig_sysinfo;
 static glibc_sysconf _orig_sysconf;
 
 
-static char *basedir = "/sys/fs/cgroup";
+static char *cgfs_base = "/sys/fs/cgroup";
 
 static bool inject_open;
 
 struct inject_reader {
   char *target_path;
   char *tmp_file_template;
-  proc_reader reader_func;
+  tmp_proc_file_flusher flusher;
 };
 
 static int orig_open(const char *pathname, int flags, mode_t mode) {
@@ -116,7 +119,7 @@ static bool is_inject_target() {
 
     while (target) {
       if (0 == strcmp(base, target)) {
-	return true;
+	    return true;
       }
 
       target = strtok(NULL, ":");
@@ -156,8 +159,8 @@ static void dorealloc(char **mem, size_t oldlen, size_t newlen)
   }
 }
 
-static void append_line(char **contents, size_t *len, char *line, ssize_t linelen) {
-
+static void append_line(char **contents, size_t *len,
+                        char *line, ssize_t linelen) {
   size_t newlen = *len + linelen;
   dorealloc(contents, *len, newlen + 1);
   memcpy(*contents + *len, line, linelen+1);
@@ -204,9 +207,9 @@ bool cgfs_get_value(const char *controller, const char *cgroup, const char *file
   if (!controller)
     return false;
 
-  len = strlen(basedir) + strlen(controller) + strlen(cgroup) + strlen(file) + 4;
+  len = strlen(cgfs_base) + strlen(controller) + strlen(cgroup) + strlen(file) + 4;
   fnam = alloca(len);
-  snprintf(fnam, len, "%s/%s/%s/%s", basedir, controller, cgroup, file);
+  snprintf(fnam, len, "%s/%s/%s/%s", cgfs_base, controller, cgroup, file);
 
   *value = read_file(fnam);
   if (!*value) {
@@ -299,7 +302,7 @@ static long int getreaperage()
  * For the first field, we use the mtime for the reaper for
  * the calling pid as returned by getreaperage
  */
-static int read_proc_uptime(FILE *f) {
+static int flush_proc_uptime(FILE *f) {
   long int reaperage = getreaperage();
   unsigned long int busytime = get_reaper_busy(), idletime;
   size_t total_len = 0;
@@ -370,7 +373,6 @@ typedef struct {
   unsigned long swapcached;
   unsigned long slab;
 } meminfo;
-
 
 static bool get_container_meminfo(meminfo *info, unsigned int unit) {
   bool ret = false;
@@ -476,7 +478,7 @@ err:
   return ret;
 }
 
-static int read_proc_meminfo(FILE *f) {
+static int flush_proc_meminfo(FILE *f) {
   meminfo info;
   bool read_succeed;
   read_succeed = get_container_meminfo(&info, 1024);
@@ -574,13 +576,12 @@ static bool cpu_in_cpuset(int cpu, const char *cpuset)
     ret = cpuset_getrange(c, &a, &b);
     if (ret == 1 && cpu == a) // "1" or "1,6"
       return true;
-    else if (ret == 2 && cpu >= a && cpu <= b) // range match
+    else if (ret == 2 && cpu >= a && cpu <= b) // range match "0-1"
       return true;
   }
 
   return false;
 }
-
 
 static unsigned long get_btime() {
   struct stat sb;
@@ -609,7 +610,6 @@ err:
   free(procs_str);
   return ret;
 }
-
 
 static unsigned int get_cpushares() {
   char *cg = NULL;
@@ -673,7 +673,6 @@ static unsigned int count_cpus_in_cpuset(const char *cpuset) {
   return ret;
 }
 
-
 static bool allocated_by_cpushares() {
   char *cpuset = get_cpuset();
   bool ret = true;
@@ -690,7 +689,7 @@ err:
   return ret;
 }
 
-static int read_proc_stat_by_cpusets(FILE *statf) {
+static int flush_proc_stat_by_cpusets(FILE *statf) {
   char *cpuset = NULL;
   char *line = NULL;
   size_t linelen = 0, total_len = 0, rv = 0;
@@ -726,7 +725,7 @@ static int read_proc_stat_by_cpusets(FILE *statf) {
 
   //skip first line
   if (getline(&line, &linelen, f) < 0) {
-    DEBUG_LOG("read_proc_stat skip first line failed\n");
+    DEBUG_LOG("flush_proc_stat skip first line failed\n");
     goto err;
   }
 
@@ -816,8 +815,7 @@ err:
   return rv;
 }
 
-
-static int read_proc_stat_by_shares(FILE *statf) {
+static int flush_proc_stat_by_shares(FILE *statf) {
   int cpu_num = get_cpushares() / 1024;
   int total_cpu_num = orig_sysconf(_SC_NPROCESSORS_ONLN);
   char *cg = NULL;
@@ -903,14 +901,13 @@ err:
   return rv;
 }
 
-
-static int read_proc_stat(FILE *statf) {
+static int flush_proc_stat(FILE *statf) {
   if (allocated_by_cpushares()) {
     DEBUG_LOG("get cpu by shares");
-    return read_proc_stat_by_shares(statf);
+    return flush_proc_stat_by_shares(statf);
   } else {
     DEBUG_LOG("get cpu by cpusets");
-    return read_proc_stat_by_cpusets(statf);
+    return flush_proc_stat_by_cpusets(statf);
   }
 }
 
@@ -937,7 +934,7 @@ static void get_blkio_io_value(char *str, unsigned major, unsigned minor, char *
   }
 }
 
-static int read_proc_diskstats(FILE *f) {
+static int flush_proc_diskstats(FILE *f) {
   char dev_name[72];
   char *cg;
   char *io_serviced_str = NULL, *io_merged_str = NULL, *io_service_bytes_str = NULL,
@@ -1051,7 +1048,6 @@ static bool cpuline_in_cpuset(const char *line, const char *cpuset)
   return cpu_in_cpuset(cpu, cpuset);
 }
 
-
 static bool is_processor_line(const char *line)
 {
   int cpu;
@@ -1061,7 +1057,7 @@ static bool is_processor_line(const char *line)
   return false;
 }
 
-static int read_proc_cpuinfo(FILE *f) {
+static int flush_proc_cpuinfo(FILE *f) {
   char *cg;
   char *cpuset = NULL;
   char *line = NULL;
@@ -1126,7 +1122,7 @@ err:
   return rv;
 }
 
-static int read_cpu_online(FILE *f) {
+static int flush_sys_cpu_online(FILE *f) {
   char *cpuset = NULL;
   int ret = 0;
   int cpu_num;
@@ -1158,7 +1154,7 @@ static void get_fd_name(int fd, char *name, ssize_t size) {
   }
 }
 
-static int open_container_data(proc_reader func, char* file_temp, int flags, mode_t mode) {
+static int open_container_metrics(tmp_proc_file_flusher func, char* file_temp, int flags, mode_t mode) {
   char tmpfile[128];
   int ret = -1;
   int fd;
@@ -1185,17 +1181,16 @@ static int open_container_data(proc_reader func, char* file_temp, int flags, mod
 }
 
 struct inject_reader readers[] = {
-  {"/proc/uptime", "/tmp/"TMPFILE_MAGIC"proc_uptime", read_proc_uptime},
-  {"/proc/meminfo", "/tmp/"TMPFILE_MAGIC"proc_meminfo", read_proc_meminfo},
-  {"/proc/stat",  "/tmp/"TMPFILE_MAGIC"proc_stat", read_proc_stat},
-  {"/proc/diskstats", "/tmp/"TMPFILE_MAGIC"proc_diskstats", read_proc_diskstats},
-  {"/proc/cpuinfo", "/tmp/"TMPFILE_MAGIC"proc_cpuinfo", read_proc_cpuinfo},
-  {"/sys/devices/system/cpu/online", "/tmp/"TMPFILE_MAGIC"proc_cpuonline", read_cpu_online},
+  {"/proc/uptime", "/tmp/"TMPFILE_MAGIC"proc_uptime", flush_proc_uptime},
+  {"/proc/meminfo", "/tmp/"TMPFILE_MAGIC"proc_meminfo", flush_proc_meminfo},
+  {"/proc/stat",  "/tmp/"TMPFILE_MAGIC"proc_stat", flush_proc_stat},
+  {"/proc/diskstats", "/tmp/"TMPFILE_MAGIC"proc_diskstats", flush_proc_diskstats},
+  {"/proc/cpuinfo", "/tmp/"TMPFILE_MAGIC"proc_cpuinfo", flush_proc_cpuinfo},
+  {"/sys/devices/system/cpu/online", "/tmp/"TMPFILE_MAGIC"sys_cpuonline", flush_sys_cpu_online},
 };
 
 #define FOR_EACH_READER(var) struct inject_reader var=readers[0];\
   for(int i=0; i < sizeof(readers)/sizeof(readers[0]); reader=readers[++i])
-
 
 static int injected_open(const char *pathname, int flags, mode_t mode) {
   int ret = -1;
@@ -1204,7 +1199,7 @@ static int injected_open(const char *pathname, int flags, mode_t mode) {
 
   FOR_EACH_READER(reader){
     if (0 == strcmp(reader.target_path, pathname)) {
-      ret = open_container_data(reader.reader_func,
+      ret = open_container_metrics(reader.flusher,
                                 reader.tmp_file_template,
                                 flags, mode);
       break;
@@ -1228,14 +1223,14 @@ static bool is_injected_file(const char *pathname) {
   return false;
 }
 
-static int refresh_container_data(int fd, proc_reader func, char *template) {
+static int refresh_container_metrics(int fd, tmp_proc_file_flusher func, char *template) {
   int flags;
   int ret = -1;
 
   flags = fcntl(fd, F_GETFL);
   if (flags > -1) {
     int tmp_fd;
-    tmp_fd = open_container_data(func, template, flags, 0);
+    tmp_fd = open_container_metrics(func, template, flags, 0);
 
     if (tmp_fd > -1) {
       ret = dup2(tmp_fd, fd);
@@ -1254,19 +1249,17 @@ static off_t injected_lseek(int fd, off_t offset, int whence) {
   FOR_EACH_READER(reader) {
     if (startswith(file_name, reader.tmp_file_template)) {
       DEBUG_LOG("Inject lseek for fd %d as %s", fd, reader.target_path);
-      refresh_container_data(fd, reader.reader_func, reader.tmp_file_template);
+      refresh_container_metrics(fd, reader.flusher, reader.tmp_file_template);
       break;
     }
   }
   return orig_lseek(fd, offset, whence);
 }
 
-
 static void _init() {
   DEBUG_LOG("Init stdlib hijack.");
   inject_open = is_inject_target();
 }
-
 
 int open(const char *pathname, int flags, mode_t mode) {
   if (inject_open && is_injected_file(pathname)) {
@@ -1320,7 +1313,6 @@ int sysinfo(struct sysinfo *info) {
   ret = 0;
   return ret;
 }
-
 
 long sysconf(int name) {
   DEBUG_LOG("Calling hijacked sysconf");
