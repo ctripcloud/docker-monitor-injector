@@ -1261,6 +1261,12 @@ static void _init() {
   inject_open = is_inject_target();
 }
 
+/* 
+ * 
+ * HIJACKED LIBC FUNCTIONS: open, fopen, lseek, sysinfo, sysconf
+ *
+ */
+
 int open(const char *pathname, int flags, mode_t mode) {
   if (inject_open && is_injected_file(pathname)) {
     return injected_open(pathname, flags, mode);
