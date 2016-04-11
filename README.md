@@ -1,6 +1,6 @@
 # Introduction
 
-Docker utilizes Linux namespace to isolate resource for containers like network, filesystem. Yet all containers share the same system performance metrics, which cause traditional system performnce tools report metrics for whole host instead of each container.
+Docker utilizes Linux namespace to isolate resources (network, filesystem and pid etc.) for containers. However traditional system performnce tools (uptime, top etc.) are unaware of the namespace. When runnig inside containers, they report the same metrics as running on host.
 
 This project provide a solution to correctly get system performance metrics within each container, without any need to modifying any exisitng monitoring tools.
 
